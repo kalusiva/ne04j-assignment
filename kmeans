@@ -1,0 +1,163 @@
+LOAD CSV FROM "http://cs.joensuu.fi/sipu/datasets/s3.txt" AS row
+WITH row,
+toInteger(trim(substring(row[0], 0, 11))) AS x, toInteger(trim(substring(row[0], 12))) AS y
+CREATE (i:Item {location:point({x:x, y:y})})
+RETURN COUNT(*)
+
+MATCH (n:Centroid)
+DETACH DELETE n
+
+MATCH (i:Item)
+WITH i, rand() AS sortOrder
+ORDER BY sortOrder
+LIMIT 15
+CREATE (c:Centroid)
+SET c.location = i.location,
+c.iterations = 0
+RETURN *
+
+MATCH (c:Centroid)
+WITH collect(c) AS centroids
+UNWIND range(0, 15) AS num
+SET (centroids[num]).clusterNumber = num + 1
+RETURN centroids[num]
+
+call apoc.periodic.commit(
+"MATCH (i:Item), (c:Centroid)
+   WITH i, c ORDER BY distance(i.location, c.location)
+   WITH i, i.clusterNumber AS oldClusterNumber, collect(c) AS
+      centroids
+   SET i.clusterNumber = centroids[0].clusterNumber
+   WITH i, oldClusterNumber
+   WHERE i.clusterNumber <> oldClusterNumber
+   WITH count(*) AS changedCount
+   MATCH (i:Item), (c:Centroid)
+   WHERE i.clusterNumber = c.clusterNumber
+   WITH changedCount, c, avg(i.location.x) AS newX,
+      avg(i.location.y) AS newY
+   SET c.location = point({x:newX, y:newY}),
+   c.iterations = c.iterations + 1
+   RETURN CASE WHEN c.iterations < 20 THEN 1 ELSE 0 END
+   LIMIT 20"
+   ,{})
+
+
+=============================
+Shortest PATH
+=============================
+
+MERGE (a:Loc {name:"A"})
+MERGE (b:Loc {name:"B"})
+MERGE (c:Loc {name:"C"})
+MERGE (d:Loc {name:"D"})
+MERGE (e:Loc {name:"E"})
+MERGE (f:Loc {name:"F"})
+MERGE (a)-[:ROAD {cost:50}]->(b)
+MERGE (a)-[:ROAD {cost:50}]->(c)
+MERGE (a)-[:ROAD {cost:100}]->(d)
+MERGE (b)-[:ROAD {cost:40}]->(d)
+MERGE (c)-[:ROAD {cost:40}]->(d)
+MERGE (c)-[:ROAD {cost:80}]->(e)
+MERGE (d)-[:ROAD {cost:30}]->(e)
+MERGE (d)-[:ROAD {cost:80}]->(f)
+MERGE (e)-[:ROAD {cost:40}]->(f);
+
+call dbms.components() yield name, versions, edition unwind versions as version return name, version, edition;
+
+CALL gds.graph.list()
+
+MATCH (start:Loc {name: 'A'}), (end:Loc {name: 'F'})
+CALL gds.alpha.shortestPath.stream({
+  nodeProjection: 'Loc',
+  relationshipProjection: {
+    ROAD: {
+      type: 'ROAD',
+      properties: 'cost',
+      orientation: 'UNDIRECTED'
+    }
+  },
+  startNode: start,
+  endNode: end,
+  relationshipWeightProperty: 'cost',
+  validateRelationships:false
+})
+YIELD nodeId, cost
+RETURN gds.util.asNode(nodeId).name AS name, cost
+
+
+======
+Page Rank
+=====
+
+CREATE
+  (v1:Page {name:'v1'}),
+  (v2:Page {name:'v2'}),
+  (v3:Page {name:'v3'}),
+  (v4:Page {name:'v4'}),
+  (v1)-[:LINKS {weight: 1}]->(v2),
+  (v2)-[:LINKS {weight: 1}]->(v1),
+  (v1)-[:LINKS {weight: 1}]->(v3),
+  (v3)-[:LINKS {weight: 1}]->(v1),
+  (v1)-[:LINKS {weight: 1.0}]->(v4),
+  (v4)-[:LINKS {weight: 1.0}]->(v3),
+  (v2)-[:LINKS {weight: 1.0}]->(v4);
+
+  CREATE
+    (v1:P {name:'v1'}),
+    (v2:P {name:'v2'}),
+    (v3:P {name:'v3'}),
+    (v4:P {name:'v4'}),
+    (v5:P {name:'v5'}),
+    (v1)-[:L {weight: 1}]->(v2),
+    (v1)-[:L {weight: 1}]->(v5),
+    (v1)-[:L {weight: 1}]->(v4),
+    (v4)-[:L {weight: 1}]->(v3),
+    (v2)-[:L {weight: 1.0}]->(v3),
+    (v2)-[:L {weight: 1.0}]->(v5),
+    (v3)-[:L {weight: 1.0}]->(v5);
+
+
+
+    CALL gds.graph.create(
+  'myGraphNew',
+  'P',
+  'L',
+  {
+    relationshipProperties: 'weight',
+    relationshipProjection: {
+    	orinetation:'UNDIRECTED'
+        }
+  }
+)
+
+
+
+Sample :
+
+CREATE
+  (a:Page {name:'PageA'}),
+  (b:Page {name:'PageB'}),
+  (c:Page {name:'PageC'}),
+  (d:Page {name:'PageD'}),
+  (a)-[:LINKS {weight: 1}]->(b),
+  (a)-[:LINKS {weight: 1}]->(c),
+  (c)-[:LINKS {weight: 1}]->(a),
+  (b)-[:LINKS {weight: 1}]->(c),
+  (d)-[:LINKS {weight: 1.0}]->(c);
+
+  CALL gds.graph.create(
+  'myGraph',
+  'Page',
+  'LINKS',
+  {
+    relationshipProperties: 'weight'
+  }
+)
+
+CALL gds.pageRank.stream('myGraph', {
+  maxIterations: 100,
+  dampingFactor: 0.85
+  })
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).name AS name, score
+ORDER BY score DESC, name ASC
